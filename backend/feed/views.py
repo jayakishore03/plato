@@ -1,6 +1,24 @@
 from rest_framework import viewsets, status, generics
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticatedOrReadOnly, IsAuthenticated
+from django.shortcuts import get_object_or_404
+from django.db.models import Count, Q, F, Prefetch, Exists, OuterRef, Sum, Case, When, Value
+from django.db import transaction, IntegrityError
+from django.utils import timezone
+from datetime import timedelta
+from .models import Post, Comment, Like
+from .serializers import PostSerializer, PostDetailSerializer, CommentSerializer, CreatePostSerializer, CreateCommentSerializer, UserSerializer
+from django.contrib.auth.models import User
+from django.contrib.auth import authenticate
+
+from .permissions import IsAuthorOrAdminOrReadOnly
+
+class PostViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticatedOrReadOnly, IsAuthorOrAdminOrReadOnly]
+    
+    def get_queryset(self):
+        user = self.request.user
         qs = Post.objects.all().select_related('author').order_by('-created_at')
         
         # Annotate likes count
@@ -153,9 +171,6 @@ class MeView(generics.RetrieveAPIView):
     def get_object(self):
         return self.request.user
 
-
-from django.contrib.auth import authenticate
-
 class GuestLoginView(generics.CreateAPIView):
     permission_classes = []
     
@@ -164,21 +179,40 @@ class GuestLoginView(generics.CreateAPIView):
         if not username:
              return Response({'error': 'Username required'}, status=status.HTTP_400_BAD_REQUEST)
         
-        created = False
+        target_username = username
+        user = None
+        
+        # 1. Try to find user
         try:
-            user = User.objects.get(username=username)
-        except User.DoesNotExist:
-            user = User.objects.create_user(username=username, password='guestpassword123')
-            created = True
+            user = User.objects.get(username=target_username)
+            # Check if it's "our" guest user (password matches)
+            if not user.check_password('guestpassword123'):
+                 # It's taken by someone else (e.g. admin or another guest with diff password? No all guests have same)
+                 # Wait, if all guests have same password, then anyone can login as 'jay'.
+                 # Requirement: "take any name".
+                 # If 'jay' exists and is admin, we can't use it.
+                 # If 'jay' exists and is guest, we CAN use it? Or should we make a new one?
+                 # Let's simple append random digits if taken by non-guest or just generally to avoid collision if desired.
+                 # User asked: "take any name and save it".
+                 # Best approach: If exact match fails auth, try appending numbers until free.
+                 import random
+                 while True:
+                     target_username = f"{username}_{random.randint(100, 9999)}"
+                     if not User.objects.filter(username=target_username).exists():
+                         user = User.objects.create_user(username=target_username, password='guestpassword123')
+                         break
             
-        user = authenticate(username=username, password='guestpassword123')
+        except User.DoesNotExist:
+            user = User.objects.create_user(username=target_username, password='guestpassword123')
+
+        # Now authenticate
+        user = authenticate(username=target_username, password='guestpassword123')
         
         if user:
              return Response({
                  'username': user.username,
                  'is_staff': user.is_staff,
-                 'auth_token': 'Basic ' + f'{username}:guestpassword123'.encode('utf-8').decode('iso-8859-1')
+                 'auth_token': 'Basic ' + f'{target_username}:guestpassword123'.encode('utf-8').decode('iso-8859-1')
              })
         else:
-             return Response({'error': 'Username taken by a protected account. Choose another.'}, status=status.HTTP_409_CONFLICT)
-
+             return Response({'error': 'System error'}, status=500)

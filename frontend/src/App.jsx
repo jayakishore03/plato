@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { MessageSquare, Heart, Trophy, User as UserIcon, LogIn, Send, X, CornerDownRight, Trash2 } from 'lucide-react'
+import { MessageSquare, Heart, Trophy, User as UserIcon, LogIn, Send, X, CornerDownRight, Trash2, Eye, EyeOff } from 'lucide-react'
 
 const BASE_URL = 'http://127.0.0.1:8000/api'
 
@@ -336,6 +336,7 @@ export default function App() {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [showLogin, setShowLogin] = useState(false)
+  const [showPassword, setShowPassword] = useState(false)
 
   // New Post
   const [newPostContent, setNewPostContent] = useState('')
@@ -578,7 +579,21 @@ export default function App() {
               </div>
               <div>
                 <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Password</label>
-                <input type="password" className="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-2 focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition-all" value={password} onChange={e => setPassword(e.target.value)} />
+                <div className="relative">
+                  <input
+                    type={showPassword ? "text" : "password"}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-2 pr-10 focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition-all"
+                    value={password}
+                    onChange={e => setPassword(e.target.value)}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors"
+                  >
+                    {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                  </button>
+                </div>
               </div>
               <Button className="w-full justify-center py-2.5 mt-2">Sign In</Button>
               <button type="button" onClick={() => setShowLogin(false)} className="w-full text-center text-xs text-slate-400 hover:text-slate-600 mt-4">Cancel</button>
