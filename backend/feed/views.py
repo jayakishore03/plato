@@ -1,0 +1,184 @@
+from rest_framework import viewsets, status, generics
+from rest_framework.decorators import action
+from rest_framework.response import Response
+        qs = Post.objects.all().select_related('author').order_by('-created_at')
+        
+        # Annotate likes count
+        qs = qs.annotate(likes_count=Count('likes'))
+        
+        # Annotate is_liked if user is authenticated
+        if user.is_authenticated:
+            is_liked_subquery = Like.objects.filter(
+                post=OuterRef('pk'),
+                user=user
+            )
+            qs = qs.annotate(is_liked=Exists(is_liked_subquery))
+            
+        return qs
+
+    def get_serializer_class(self):
+        if self.action == 'create':
+            return CreatePostSerializer
+        if self.action == 'retrieve':
+            return PostDetailSerializer
+        return PostSerializer
+
+    def perform_create(self, serializer):
+        serializer.save(author=self.request.user)
+
+    def retrieve(self, request, *args, **kwargs):
+        # Optimized retrieval
+        instance = self.get_object() # This triggers the base query with annotations
+        
+        # Now fetch comments efficiently
+        # Strategy: Fetch all comments for this post in 1 query
+        comments_qs = Comment.objects.filter(post=instance).select_related('author').order_by('created_at')
+        comments_qs = comments_qs.annotate(likes_count=Count('likes'))
+        
+        if request.user.is_authenticated:
+            is_liked_subquery = Like.objects.filter(
+                comment=OuterRef('pk'),
+                user=request.user
+            )
+            comments_qs = comments_qs.annotate(is_liked=Exists(is_liked_subquery))
+            
+        all_comments = list(comments_qs)
+        
+        # Build the tree in Python (O(N))
+        comment_map = {c.id: c for c in all_comments}
+        root_comments = []
+        
+        for comment in all_comments:
+            # Initialize buffer for replies
+            comment._prefetched_replies = []
+            
+        for comment in all_comments:
+            if comment.parent_id:
+                parent = comment_map.get(comment.parent_id)
+                if parent:
+                    parent._prefetched_replies.append(comment)
+            else:
+                root_comments.append(comment)
+                
+        # Attach to instance
+        instance.comments_tree = root_comments
+        
+        serializer = self.get_serializer(instance)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['post'], permission_classes=[IsAuthenticated])
+    def like(self, request, pk=None):
+        post = self.get_object()
+        user = request.user
+        
+        try:
+            like = Like.objects.filter(post=post, user=user).first()
+            if like:
+                like.delete()
+                return Response({'status': 'unliked'}, status=status.HTTP_200_OK)
+            else:
+                Like.objects.create(post=post, user=user)
+                return Response({'status': 'liked'}, status=status.HTTP_201_CREATED)
+        except IntegrityError:
+            # Race condition caught by DB constraint
+            return Response({'status': 'ignored', 'detail': 'Already liked'}, status=status.HTTP_200_OK)
+
+class CommentViewSet(viewsets.ModelViewSet):
+    queryset = Comment.objects.none() # Handled via Post usually, but we need create endpoint
+    permission_classes = [IsAuthenticated]
+    
+    def get_serializer_class(self):
+        return CreateCommentSerializer
+
+    def perform_create(self, serializer):
+        # We need to ensure post is linked. 
+        # Typically simple API: POST /comments/ { post_id, content, parent_id }
+        # The serializer should probably accept post_id or we get it from URL.
+        # Let's modify logic to accept post_id in body if using ModelViewSet standardly
+        # For prototype simplicity, assuming passed in body or context.
+        pass
+
+    @action(detail=True, methods=['post'])
+    def like(self, request, pk=None):
+        comment = get_object_or_404(Comment, pk=pk)
+        user = request.user
+        
+        try:
+            like = Like.objects.filter(comment=comment, user=user).first()
+            if like:
+                like.delete()
+                return Response({'status': 'unliked'}, status=status.HTTP_200_OK)
+            else:
+                Like.objects.create(comment=comment, user=user)
+                return Response({'status': 'liked'}, status=status.HTTP_201_CREATED)
+        except IntegrityError:
+            return Response({'status': 'ignored'}, status=status.HTTP_200_OK)
+
+class ListCreateCommentView(generics.CreateAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = CreateCommentSerializer
+    
+    def perform_create(self, serializer):
+        post_id = self.kwargs['post_id']
+        post = get_object_or_404(Post, pk=post_id)
+        serializer.save(author=self.request.user, post=post)
+
+class LeaderboardView(generics.ListAPIView):
+    serializer_class = UserSerializer # Need a custom one with karma
+    
+    def list(self, request):
+        time_threshold = timezone.now() - timedelta(hours=24)
+        
+        # Calculate karma dynamically
+        users = User.objects.annotate(
+            post_likes_count=Count('posts__likes', filter=Q(posts__likes__created_at__gte=time_threshold), distinct=True),
+            comment_likes_count=Count('comments__likes', filter=Q(comments__likes__created_at__gte=time_threshold), distinct=True)
+        ).annotate(
+            karma=F('post_likes_count') * 5 + F('comment_likes_count')
+        ).order_by('-karma')[:5]
+        
+        data = []
+        for u in users:
+            data.append({
+                'username': u.username,
+                'karma': u.karma
+            })
+            
+        return Response(data)
+
+class MeView(generics.RetrieveAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = UserSerializer
+    
+    def get_object(self):
+        return self.request.user
+
+
+from django.contrib.auth import authenticate
+
+class GuestLoginView(generics.CreateAPIView):
+    permission_classes = []
+    
+    def post(self, request):
+        username = request.data.get('username')
+        if not username:
+             return Response({'error': 'Username required'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        created = False
+        try:
+            user = User.objects.get(username=username)
+        except User.DoesNotExist:
+            user = User.objects.create_user(username=username, password='guestpassword123')
+            created = True
+            
+        user = authenticate(username=username, password='guestpassword123')
+        
+        if user:
+             return Response({
+                 'username': user.username,
+                 'is_staff': user.is_staff,
+                 'auth_token': 'Basic ' + f'{username}:guestpassword123'.encode('utf-8').decode('iso-8859-1')
+             })
+        else:
+             return Response({'error': 'Username taken by a protected account. Choose another.'}, status=status.HTTP_409_CONFLICT)
+
