@@ -24,13 +24,22 @@ function Button({ children, onClick, variant = 'primary', className = '', ...pro
   return <button onClick={onClick} className={`${base} ${variants[variant]} ${className}`} {...props}>{children}</button>
 }
 
-function CommentNode({ comment, depth = 0, onReply, onLike, currentUser }) {
+function CommentNode({ comment, depth = 0, onReply, onLike, currentUser, onAuthAction }) {
   const [isReplying, setIsReplying] = useState(false)
   const [replyContent, setReplyContent] = useState('')
   const [likes, setLikes] = useState(comment.likes_count)
   const [isLiked, setIsLiked] = useState(comment.is_liked)
 
   const handleLike = async () => {
+    if (!currentUser) {
+      onAuthAction((u) => handleLikeAction(u))
+      return
+    }
+    handleLikeAction()
+  }
+
+  const handleLikeAction = async (userOverride) => {
+    const effectiveUser = userOverride || currentUser
     // Optimistic update
     const prevLikes = likes
     const prevLiked = isLiked
@@ -38,52 +47,79 @@ function CommentNode({ comment, depth = 0, onReply, onLike, currentUser }) {
     setIsLiked(!prevLiked)
 
     try {
-      if (!currentUser) throw new Error("Login required")
-      const headers = { 'Authorization': currentUser.authHeader }
+      const headers = { 'Authorization': effectiveUser.authHeader }
       await fetcher(`/comments/${comment.id}/like/`, { method: 'POST', headers })
     } catch (e) {
       setLikes(prevLikes)
       setIsLiked(prevLiked)
-      alert("Action failed or login required")
+      console.error("Action failed")
     }
   }
 
   const handleSubmitReply = () => {
+    if (!currentUser) {
+      onAuthAction((u) => {
+        onReply(comment.id, replyContent, u)
+        setIsReplying(false)
+        setReplyContent('')
+      })
+      return
+    }
     onReply(comment.id, replyContent)
     setIsReplying(false)
     setReplyContent('')
   }
 
   return (
-    <div className={`flex flex-col gap-2 ${depth > 0 ? 'ml-4 pl-4 border-l-2 border-slate-100' : ''}`}>
-      <div className="bg-slate-50 p-3 rounded-lg border border-slate-100">
-        <div className="flex items-center justify-between mb-1">
-          <span className="font-semibold text-sm text-slate-700">{comment.author.username}</span>
-          <span className="text-xs text-slate-400">{new Date(comment.created_at).toLocaleDateString()}</span>
+    <div className={`flex flex-col gap-2 ${depth > 0 ? 'ml-12 mt-3' : 'mt-4'}`}>
+      <div className="flex gap-3 items-start group">
+        <div className="w-8 h-8 bg-gradient-to-tr from-yellow-400 to-pink-600 rounded-full p-[2px] flex-shrink-0 cursor-pointer">
+          <div className="w-full h-full bg-white rounded-full flex items-center justify-center">
+            <span className="text-xs font-bold text-slate-700">{comment.author.username[0].toUpperCase()}</span>
+          </div>
         </div>
-        <p className="text-slate-700 text-sm">{comment.content}</p>
 
-        <div className="flex items-center gap-4 mt-2">
-          <button onClick={handleLike} className={`flex items-center gap-1 text-xs font-medium transition-colors ${isLiked ? 'text-pink-500' : 'text-slate-500 hover:text-pink-500'}`}>
-            <Heart size={14} fill={isLiked ? "currentColor" : "none"} />
-            {likes}
-          </button>
-          <button onClick={() => setIsReplying(!isReplying)} className="flex items-center gap-1 text-xs font-medium text-slate-500 hover:text-indigo-600">
-            <MessageSquare size={14} />
-            Reply
-          </button>
+        <div className="flex-1">
+          <div className="text-sm">
+            <span className="font-bold text-slate-900 mr-2 cursor-pointer hover:text-slate-600">{comment.author.username}</span>
+            <span className="text-slate-800">{comment.content}</span>
+          </div>
+
+          <div className="flex items-center gap-4 mt-1.5">
+            <span className="text-[10px] text-slate-400 font-medium">{new Date(comment.created_at).toLocaleDateString()}</span>
+            {likes > 0 && (
+              <span className="text-[10px] font-bold text-slate-500">{likes} like{likes !== 1 ? 's' : ''}</span>
+            )}
+            <button onClick={() => setIsReplying(!isReplying)} className="text-[10px] font-bold text-slate-500 hover:text-slate-800 transition-colors">
+              Reply
+            </button>
+            <button className="text-[10px] text-slate-400 hover:text-slate-800">
+              <CornerDownRight size={12} className="inline mr-1" />
+            </button>
+          </div>
         </div>
+
+        <button onClick={handleLike} className="pt-1 text-slate-400 hover:text-red-500 transition-colors">
+          <Heart size={12} fill={isLiked ? "#ef4444" : "none"} className={isLiked ? "text-red-500" : ""} />
+        </button>
       </div>
 
       {isReplying && (
-        <div className="flex gap-2 items-start mt-1">
+        <div className="flex gap-2 items-center mt-2 ml-11">
           <input
             value={replyContent}
             onChange={e => setReplyContent(e.target.value)}
-            placeholder="Write a reply..."
-            className="flex-1 bg-white border border-slate-200 rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+            placeholder={`Reply to ${comment.author.username}...`}
+            className="flex-1 bg-transparent border-b border-slate-300 py-1 text-sm focus:outline-none focus:border-slate-800 placeholder:text-slate-400"
+            autoFocus
           />
-          <Button variant="primary" onClick={handleSubmitReply} className="px-3 py-1 text-xs">Send</Button>
+          <button
+            disabled={!replyContent}
+            onClick={handleSubmitReply}
+            className="text-indigo-500 font-bold text-sm disabled:opacity-50 hover:text-indigo-700"
+          >
+            Post
+          </button>
         </div>
       )}
 
@@ -122,50 +158,53 @@ function PostDetail({ post: initialPost, onClose, currentUser, onAuthAction }) {
   const handlePostLike = async () => {
     // Wrapper checking auth
     if (!currentUser) {
-      onAuthAction(() => handlePostLikeAction())
+      onAuthAction((u) => handlePostLikeAction(u))
       return
     }
     handlePostLikeAction()
   }
 
-  const handlePostLikeAction = async () => {
+  const handlePostLikeAction = async (userOverride) => {
+    const effectiveUser = userOverride || currentUser
     const prevLikes = post.likes_count
     const prevLiked = post.is_liked
     setPost(p => ({ ...p, likes_count: prevLiked ? prevLikes - 1 : prevLikes + 1, is_liked: !prevLiked }))
 
     try {
-      if (!currentUser) throw new Error("Login required")
+      if (!effectiveUser) throw new Error("Login required")
       await fetcher(`/posts/${post.id}/like/`, {
         method: 'POST',
-        headers: { 'Authorization': currentUser.authHeader }
+        headers: { 'Authorization': effectiveUser.authHeader }
       })
     } catch (e) {
-      alert("Like failed")
+      console.error("Like failed", e)
       loadData() // Revert
     }
   }
 
-  const handleReplyRequest = (parentId, content) => {
-    if (!currentUser) {
-      onAuthAction(() => handleReplyAction(parentId, content))
+  const handleReplyRequest = (parentId, content, userOverride) => {
+    const effectiveUser = userOverride || currentUser
+    if (!effectiveUser) {
+      onAuthAction((u) => handleReplyAction(parentId, content, u))
       return
     }
-    handleReplyAction(parentId, content)
+    handleReplyAction(parentId, content, effectiveUser)
   }
 
-  const handleReplyAction = async (parentId, content) => {
+  const handleReplyAction = async (parentId, content, userOverride) => {
+    const effectiveUser = userOverride || currentUser
     try {
       await fetcher(`/posts/${post.id}/comments/`, {
         method: 'POST',
         headers: {
-          'Authorization': currentUser.authHeader,
+          'Authorization': effectiveUser.authHeader,
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({ content, parent: parentId })
       })
       loadData() // Refresh tree
     } catch (e) {
-      alert("Failed to comment")
+      console.error("Failed to comment", e)
     }
   }
 
@@ -233,25 +272,34 @@ function PostDetail({ post: initialPost, onClose, currentUser, onAuthAction }) {
   )
 }
 
-function FeedItem({ post, onOpen, currentUser, onDelete }) {
+function FeedItem({ post, onOpen, currentUser, onDelete, onAuthAction }) {
   const [likes, setLikes] = useState(post.likes_count)
   const [isLiked, setIsLiked] = useState(post.is_liked)
 
   const handleLike = async (e) => {
     e.stopPropagation()
+    if (!currentUser) {
+      onAuthAction((u) => handleLikeAction(u))
+      return
+    }
+    handleLikeAction()
+  }
+
+  const handleLikeAction = async (userOverride) => {
+    const effectiveUser = userOverride || currentUser
     const prevLikes = likes
     const prevLiked = isLiked
     setLikes(prevLiked ? prevLikes - 1 : prevLikes + 1)
     setIsLiked(!prevLiked)
 
     try {
-      if (!currentUser) throw new Error("Login required")
-      const headers = { 'Authorization': currentUser.authHeader }
+      if (!effectiveUser) throw new Error("Login required")
+      const headers = { 'Authorization': effectiveUser.authHeader }
       await fetcher(`/posts/${post.id}/like/`, { method: 'POST', headers })
     } catch (e) {
       setLikes(prevLikes)
       setIsLiked(prevLiked)
-      alert("Login required")
+      console.error(e)
     }
   }
 
@@ -264,7 +312,7 @@ function FeedItem({ post, onOpen, currentUser, onDelete }) {
   const canDelete = currentUser && (currentUser.username === post.author.username || currentUser.is_staff)
 
   return (
-    <div onClick={onOpen} className="bg-white p-6 rounded-xl shadow-sm border border-slate-100 hover:shadow-md transition-all cursor-pointer group relative">
+    <div onClick={onOpen} className="bg-white p-6 rounded-xl shadow-sm border border-slate-100 hover:shadow-xl hover:-translate-y-1 transition-all duration-300 cursor-pointer group relative">
       <div className="flex justify-between items-start mb-3">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 bg-slate-100 rounded-full flex items-center justify-center text-slate-600 font-bold group-hover:bg-indigo-50 group-hover:text-indigo-600 transition-colors">
@@ -289,7 +337,7 @@ function FeedItem({ post, onOpen, currentUser, onDelete }) {
         </button>
         <button className="flex items-center gap-2 text-sm font-medium text-slate-500 hover:text-indigo-600 transition-colors">
           <MessageSquare size={18} />
-          Comment
+          {post.comments_count > 0 ? post.comments_count : ''} Comment{post.comments_count !== 1 ? 's' : ''}
         </button>
       </div>
     </div>
@@ -306,20 +354,25 @@ function Leaderboard({ }) {
   return (
     <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
       <div className="p-4 bg-gradient-to-r from-indigo-600 to-purple-600 text-white">
-        <h3 className="font-bold flex items-center gap-2"><Trophy size={18} /> Daily Top 5</h3>
-        <p className="text-xs text-indigo-100 mt-1">Karma earned in last 24h</p>
+        <h3 className="font-bold flex items-center gap-2"><Trophy size={18} /> Top 5 Leaders</h3>
+        <p className="text-xs text-indigo-100 mt-1">Karma earned (All-Time)</p>
       </div>
       <div className="divide-y divide-slate-50">
         {users.length === 0 ? <div className="p-4 text-sm text-slate-400">No activity yet.</div> :
           users.map((u, i) => (
-            <div key={u.username} className="p-4 flex items-center justify-between hover:bg-slate-50 transition-colors">
+            <div key={u.username} className="p-4 flex items-center justify-between hover:bg-indigo-50/50 hover:scale-[1.02] hover:shadow-sm transition-all duration-200 cursor-default">
               <div className="flex items-center gap-3">
                 <span className={`w-6 h-6 flex items-center justify-center rounded-full text-xs font-bold ${i === 0 ? 'bg-yellow-100 text-yellow-700' : 'bg-slate-100 text-slate-600'}`}>
                   {i + 1}
                 </span>
-                <span className="font-medium text-slate-700">{u.username}</span>
+                <div>
+                  <span className="font-medium text-slate-700 block text-sm">{u.username}</span>
+                  <span className="text-[10px] text-slate-400">
+                    {u.post_likes} Post Likes ({u.post_likes * 5}) • {u.comment_likes} Comm Likes ({u.comment_likes})
+                  </span>
+                </div>
               </div>
-              <span className="font-bold text-indigo-600 text-sm">{u.karma} pts</span>
+              <span className="font-bold text-indigo-600 text-sm">{u.karma} Karma</span>
             </div>
           ))}
       </div>
@@ -375,32 +428,24 @@ export default function App() {
     if (!guestUsername.trim()) return
 
     try {
-      const res = await fetcher('/guest-login/', {
+      const data = await fetcher('/guest-login/', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: guestUsername })
       })
-
-      if (!res.ok) throw new Error('Auth failed')
-
-      const data = await res.json()
-      setCurrentUser({
+      const newUser = {
         username: data.username,
         is_staff: data.is_staff,
         authHeader: data.auth_token
-      })
+      }
+      setCurrentUser(newUser)
       setShowAuthModal(false)
 
       // Execute pending Action
       if (pendingAction) {
-        // Tiny delay to ensure state updates propagate if needed, though pendingAction is a closure typically.
-        // Actually, if pendingAction relies on 'currentUser' from closure, it might be stale.
-        // But our Like/Reply handlers in FeedItem/CommentNode need to re-check user or take tokens.
-        // Simplest way: The pendingAction should probably be a logical instructions.
-        // BUT, simpler: Just having the user logged in allows them to click again.
-        // Automation:
+        // Pass the new user to the pending action so it can use valid credentials immediately
         setTimeout(() => {
-          pendingAction()
+          pendingAction(newUser)
           setPendingAction(null)
         }, 100)
       }
@@ -429,11 +474,13 @@ export default function App() {
     }
   }
 
-  const handleCreatePost = async () => {
+  const handleCreatePost = async (userOverride) => {
+    const effectiveUser = userOverride || currentUser
     if (!newPostContent.trim()) return
     try {
+      if (!effectiveUser) throw new Error("Login required")
       const headers = {
-        'Authorization': currentUser.authHeader,
+        'Authorization': effectiveUser.authHeader,
         'Content-Type': 'application/json'
       }
       await fetcher('/posts/', {
@@ -523,10 +570,10 @@ export default function App() {
         <div className="space-y-6">
           <Leaderboard />
 
-          <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-100">
+          <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-100 hover:shadow-md hover:border-slate-200 transition-all duration-300">
             <h4 className="font-bold text-slate-800 mb-2">About</h4>
             <p className="text-sm text-slate-500 leading-relaxed">
-              Welcome to the prototype. Like posts to give 5 Karma, comments for 1 Karma. The leaderboard updates in real-time based on activity in the last 24 hours.
+              Welcome to the prototype. Like posts to give 5 Karma, comments for 1 Karma. The leaderboard updates in real-time based on all activity.
             </p>
           </div>
         </div>
@@ -609,4 +656,3 @@ export default function App() {
     </div>
   )
 }
-

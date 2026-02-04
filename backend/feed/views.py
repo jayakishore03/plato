@@ -22,7 +22,7 @@ class PostViewSet(viewsets.ModelViewSet):
         qs = Post.objects.all().select_related('author').order_by('-created_at')
         
         # Annotate likes count
-        qs = qs.annotate(likes_count=Count('likes'))
+        qs = qs.annotate(likes_count=Count('likes'), comments_count=Count('comments'))
         
         # Annotate is_liked if user is authenticated
         if user.is_authenticated:
@@ -50,6 +50,8 @@ class PostViewSet(viewsets.ModelViewSet):
         
         # Now fetch comments efficiently
         # Strategy: Fetch all comments for this post in 1 query
+        # Custom query to ensure likes count is accurate
+        # Annotate post likes first if not already covered by get_object
         comments_qs = Comment.objects.filter(post=instance).select_related('author').order_by('created_at')
         comments_qs = comments_qs.annotate(likes_count=Count('likes'))
         
@@ -145,12 +147,11 @@ class LeaderboardView(generics.ListAPIView):
     serializer_class = UserSerializer # Need a custom one with karma
     
     def list(self, request):
-        time_threshold = timezone.now() - timedelta(hours=24)
-        
-        # Calculate karma dynamically
+        # Calculate karma dynamically based on ALL TIME activity
+        # Rules: 1 Like on a Post = 5 Karma. 1 Like on a Comment = 1 Karma.
         users = User.objects.annotate(
-            post_likes_count=Count('posts__likes', filter=Q(posts__likes__created_at__gte=time_threshold), distinct=True),
-            comment_likes_count=Count('comments__likes', filter=Q(comments__likes__created_at__gte=time_threshold), distinct=True)
+            post_likes_count=Count('posts__likes', distinct=True),
+            comment_likes_count=Count('comments__likes', distinct=True)
         ).annotate(
             karma=F('post_likes_count') * 5 + F('comment_likes_count')
         ).order_by('-karma')[:5]
@@ -159,7 +160,9 @@ class LeaderboardView(generics.ListAPIView):
         for u in users:
             data.append({
                 'username': u.username,
-                'karma': u.karma
+                'karma': u.karma,
+                'post_likes': u.post_likes_count,
+                'comment_likes': u.comment_likes_count
             })
             
         return Response(data)
@@ -209,10 +212,13 @@ class GuestLoginView(generics.CreateAPIView):
         user = authenticate(username=target_username, password='guestpassword123')
         
         if user:
+             import base64
+             credentials = f'{target_username}:guestpassword123'
+             token = base64.b64encode(credentials.encode('utf-8')).decode('utf-8')
              return Response({
                  'username': user.username,
                  'is_staff': user.is_staff,
-                 'auth_token': 'Basic ' + f'{target_username}:guestpassword123'.encode('utf-8').decode('iso-8859-1')
+                 'auth_token': f'Basic {token}'
              })
         else:
              return Response({'error': 'System error'}, status=500)
